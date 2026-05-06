@@ -2,18 +2,7 @@
 
 A live BTC/USDT trade terminal in your terminal — real-time candlestick chart, trade feed, and buy/sell pressure bar. Powered by the Binance public WebSocket. No API key required.
 
-```
-─ ₿ BTC/USDT  [10s candles] ──────────────────────── 10:42:31 ─
-▲ $103,241.50  +2.14%    Hi $104,100  Lo $101,200  Vol 8,432 BTC
-████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░
-BUY 68%  SELL 32%  (session)
-────────────────────────────────────────────────────────────────
-104,500 │                               ── TRADES ──
-        │  ██ ██                        TIME     S      PRICE     QTY
-103,800 │  ██ ██ ██                     10:42:31 B  103,241.5   0.012
-        │▓▓██ ██ ██                     10:42:30 S  103,238.0   0.500
-103,100 │▓▓   ██                        10:42:29 B  103,245.0   1.204
-```
+<img width="1324" height="856" alt="Image" src="https://github.com/user-attachments/assets/f0dccb17-dbaa-4045-a7b4-e481a4fc5480" />
 
 ## Install
 
