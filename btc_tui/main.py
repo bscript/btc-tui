@@ -71,6 +71,7 @@ class TUI:
         self.prev_price = 0.0
         self.buy_vol = 0.0
         self.sell_vol = 0.0
+        self.connected = False
         self.running = True
 
         curses.start_color()
@@ -108,6 +109,7 @@ class TUI:
         else:
             self.current_candle.update(price, qty, is_buy)
 
+        self.connected = True
         # store as a normalised dict so the draw loop stays exchange-agnostic
         self.trades.append({"p": str(price), "q": str(qty), "m": not is_buy, "T": ts_ms})
 
@@ -193,8 +195,13 @@ class TUI:
     def _draw_candles(self, start_row, height, start_col, width):
         all_candles = list(self.candles) + ([self.current_candle] if self.current_candle else [])
         if not all_candles:
-            self.stdscr.addstr(start_row + height // 2, start_col + 4,
-                               "Waiting for candles...", curses.color_pair(4))
+            label = EXCHANGE_LABELS.get(self.exchange, self.exchange)
+            status = f"Connecting to {label}..." if not self.connected else "Waiting for candles..."
+            try:
+                self.stdscr.addstr(start_row + height // 2, start_col + 4,
+                                   status, curses.color_pair(4))
+            except curses.error:
+                pass
             return
 
         slot = 3   # 2 chars body + 1 gap
@@ -291,12 +298,14 @@ class TUI:
 
         total = self.buy_vol + self.sell_vol
         if total > 0:
-            bar_w = w - 4
+            bar_w = w - 6   # 1 char each side for B/S labels
             buy_w = int(self.buy_vol / total * bar_w)
             sell_w = bar_w - buy_w
             try:
-                self.stdscr.addstr(2, 2, "█" * buy_w, curses.color_pair(1) | curses.A_BOLD)
-                self.stdscr.addstr(2, 2 + buy_w, "█" * sell_w, curses.color_pair(2) | curses.A_BOLD)
+                self.stdscr.addstr(2, 2, "B", curses.color_pair(1) | curses.A_BOLD)
+                self.stdscr.addstr(2, 3, "█" * buy_w, curses.color_pair(1) | curses.A_BOLD)
+                self.stdscr.addstr(2, 3 + buy_w, "█" * sell_w, curses.color_pair(2) | curses.A_BOLD)
+                self.stdscr.addstr(2, 3 + bar_w, "S", curses.color_pair(2) | curses.A_BOLD)
             except curses.error:
                 pass
             buy_pct = self.buy_vol / total * 100
@@ -329,30 +338,42 @@ class TUI:
             self.stdscr.addstr(div + 2, fc,
                                f"{'TIME':8} {'S':1} {'PRICE':>10} {'QTY':>7}"[:fw],
                                curses.color_pair(3))
+            self.stdscr.addstr(div + 3, fc, "─" * fw, curses.color_pair(3))
         except curses.error:
             pass
 
-        feed_start = div + 3
+        feed_start = div + 4
         feed_rows = h - feed_start - 1
-        visible_trades = list(self.trades)[-(feed_rows):]
 
-        for i, t in enumerate(reversed(visible_trades)):
-            row = feed_start + (feed_rows - 1 - i)
-            if row < feed_start or row >= h - 1:
-                continue
-            is_buy = not t["m"]
-            price = float(t["p"])
-            qty = float(t["q"])
-            value = price * qty
-            ts = datetime.fromtimestamp(t["T"] / 1000).strftime("%H:%M:%S")
-            color = curses.color_pair(1) if is_buy else curses.color_pair(2)
-            bold = curses.A_BOLD if value > 10000 else 0
-            side = "B" if is_buy else "S"
-            line = f"{ts} {side} {price:>10,.1f} {qty:>7.3f}"
+        if not self.connected:
+            label = EXCHANGE_LABELS.get(self.exchange, self.exchange)
+            msg = f"Connecting to {label}..."
             try:
-                self.stdscr.addstr(row, fc, line[:fw], color | bold)
+                self.stdscr.addstr(feed_start + feed_rows // 2, fc,
+                                   msg[:fw], curses.color_pair(4))
             except curses.error:
                 pass
+        else:
+            significant = [t for t in self.trades if float(t["q"]) >= 0.001]
+            visible_trades = significant[-(feed_rows):]
+
+            for i, t in enumerate(reversed(visible_trades)):
+                row = feed_start + (feed_rows - 1 - i)
+                if row < feed_start or row >= h - 1:
+                    continue
+                is_buy = not t["m"]
+                price = float(t["p"])
+                qty = float(t["q"])
+                value = price * qty
+                ts = datetime.fromtimestamp(t["T"] / 1000).strftime("%H:%M:%S")
+                color = curses.color_pair(1) if is_buy else curses.color_pair(2)
+                bold = curses.A_BOLD if value > 10000 else 0
+                side = "B" if is_buy else "S"
+                line = f"{ts} {side} {price:>10,.1f} {qty:>7.3f}"
+                try:
+                    self.stdscr.addstr(row, fc, line[:fw], color | bold)
+                except curses.error:
+                    pass
 
         try:
             footer = f" q quit │ {CANDLE_SECONDS}s candles │ {EXCHANGE_LABELS.get(self.exchange, self.exchange)} "
