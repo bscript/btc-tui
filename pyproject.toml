@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "btc-tui"
-version = "0.1.0"
+version = "0.1.1"
 description = "BTC live trade terminal with candlestick chart — streams Binance data in your terminal"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "websockets>=12.0",
+    "windows-curses>=2.3; sys_platform == 'win32'",
 ]
 
 [project.urls]
