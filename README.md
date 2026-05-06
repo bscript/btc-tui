@@ -2,7 +2,7 @@
 
 A live BTC/USDT trade terminal in your terminal, real-time candlestick chart, trade feed, and buy/sell pressure bar. Powered by the Binance public WebSocket. No API key required.
 
-
+<img width="1324" height="856" alt="Image" src="https://github.com/user-attachments/assets/6828cce7-4b14-4bd7-8ed4-b6e28a665c60" />
 
 ## Install
 
