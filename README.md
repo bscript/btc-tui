@@ -9,7 +9,7 @@ A live BTC/USDT trade terminal in your terminal — real-time candlestick chart,
 ### Homebrew (recommended)
 
 ```sh
-brew install YOUR_USERNAME/tap/btc-tui
+brew install bscript/btc-tui/btc-tui
 ```
 
 ### pip / pipx
@@ -25,7 +25,7 @@ pip install btc-tui
 ### From source
 
 ```sh
-git clone https://github.com/YOUR_USERNAME/btc-tui
+git clone https://github.com/bscript/btc-tui
 cd btc-tui
 pip install .
 ```
