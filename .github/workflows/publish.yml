@@ -1,0 +1,118 @@
+name: Publish to PyPI & Homebrew
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    # Skip the version-bump commit this workflow itself creates
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump patch version
+        id: version
+        run: |
+          python3 - <<'PYEOF'
+          import re, pathlib, os
+
+          toml = pathlib.Path("pyproject.toml").read_text()
+          match = re.search(r'version = "(\d+)\.(\d+)\.(\d+)"', toml)
+          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+          new_version = f"{major}.{minor}.{patch + 1}"
+
+          toml_new = re.sub(r'(version = ")\d+\.\d+\.\d+"', f'\\g<1>{new_version}"', toml)
+          pathlib.Path("pyproject.toml").write_text(toml_new)
+
+          init = pathlib.Path("btc_tui/__init__.py").read_text()
+          init_new = re.sub(r'(__version__ = ")\d+\.\d+\.\d+"', f'\\g<1>{new_version}"', init)
+          pathlib.Path("btc_tui/__init__.py").write_text(init_new)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"VERSION={new_version}\n")
+
+          print(f"Bumped to {new_version}")
+          PYEOF
+
+      - name: Commit version bump
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git add pyproject.toml btc_tui/__init__.py
+          git commit -m "chore: bump version to ${{ steps.version.outputs.VERSION }} [skip ci]"
+          git push
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build
+        run: python -m build
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: python -m twine upload dist/*
+
+      - name: Compute sha256
+        id: sha
+        run: |
+          SHA=$(sha256sum dist/btc_tui-${{ steps.version.outputs.VERSION }}.tar.gz | cut -d' ' -f1)
+          echo "SHA=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          SHA: ${{ steps.sha.outputs.SHA }}
+        run: |
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/bscript/homebrew-btc-tui.git
+          cd homebrew-btc-tui
+
+          python3 - <<'PYEOF'
+          import re, pathlib, os
+
+          version = os.environ["VERSION"]
+          sha = os.environ["SHA"]
+          formula = pathlib.Path("Formula/btc-tui.rb").read_text()
+
+          # Update URL to new version
+          formula = re.sub(
+              r'url "https://files\.pythonhosted\.org/packages/source/b/btc-tui/btc_tui-[\d.]+\.tar\.gz"',
+              f'url "https://files.pythonhosted.org/packages/source/b/btc-tui/btc_tui-{version}.tar.gz"',
+              formula
+          )
+
+          # Update only the first sha256 (btc-tui's, not websockets')
+          formula = re.sub(
+              r'(  sha256 ")[a-f0-9]+"',
+              f'\\g<1>{sha}"',
+              formula,
+              count=1
+          )
+
+          pathlib.Path("Formula/btc-tui.rb").write_text(formula)
+          print(f"Updated formula to {version} ({sha})")
+          PYEOF
+
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Formula/btc-tui.rb
+          git commit -m "Bump btc-tui to ${VERSION}"
+          git push
