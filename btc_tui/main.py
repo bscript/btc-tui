@@ -4,16 +4,24 @@ BTC Live Trade Terminal — with candlestick chart.
 Connects to Binance public WebSocket, no API key needed.
 """
 
+import argparse
 import asyncio
 import json
 import curses
-import sys
 from collections import deque
 from datetime import datetime
 
 import websockets
 
 BINANCE_WS = "wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@ticker"
+COINBASE_WS = "wss://advanced-trade-ws.coinbase.com"
+BYBIT_WS    = "wss://stream.bybit.com/v5/public/spot"
+
+EXCHANGE_LABELS = {
+    "binance":  "Binance BTC/USDT",
+    "coinbase": "Coinbase BTC/USD",
+    "bybit":    "Bybit BTC/USDT",
+}
 
 CANDLE_SECONDS = 10   # change to 60 for 1-min candles
 MAX_CANDLES = 80
@@ -52,8 +60,9 @@ class Candle:
 
 
 class TUI:
-    def __init__(self, stdscr):
+    def __init__(self, stdscr, exchange="binance"):
         self.stdscr = stdscr
+        self.exchange = exchange
         self.trades = deque(maxlen=MAX_TRADES)
         self.ticker = {}
         self.candles = deque(maxlen=MAX_CANDLES)
@@ -80,12 +89,9 @@ class TUI:
     def _bucket(self, ts_ms):
         return int(ts_ms / 1000 / CANDLE_SECONDS) * CANDLE_SECONDS
 
-    def ingest_trade(self, data):
-        price = float(data["p"])
-        qty = float(data["q"])
-        is_buy = not data["m"]
-        ts = self._bucket(data["T"])
-
+    def _ingest(self, price: float, qty: float, is_buy: bool, ts_ms: int):
+        """Common ingestion path used by all exchange adapters."""
+        ts = self._bucket(ts_ms)
         self.prev_price = self.last_price or price
         self.last_price = price
 
@@ -102,7 +108,87 @@ class TUI:
         else:
             self.current_candle.update(price, qty, is_buy)
 
-        self.trades.append(data)
+        # store as a normalised dict so the draw loop stays exchange-agnostic
+        self.trades.append({"p": str(price), "q": str(qty), "m": not is_buy, "T": ts_ms})
+
+    def ingest_trade(self, data):
+        """Binance aggTrade adapter."""
+        self._ingest(
+            price=float(data["p"]),
+            qty=float(data["q"]),
+            is_buy=not data["m"],
+            ts_ms=data["T"],
+        )
+
+    # ── Coinbase adapters ────────────────────────────────────────────────────
+
+    def ingest_coinbase_trades(self, trades: list):
+        for t in trades:
+            try:
+                ts_ms = int(datetime.fromisoformat(
+                    t["time"].replace("Z", "+00:00")
+                ).timestamp() * 1000)
+                self._ingest(
+                    price=float(t["price"]),
+                    qty=float(t["size"]),
+                    is_buy=(t["side"] == "BUY"),
+                    ts_ms=ts_ms,
+                )
+            except (KeyError, ValueError):
+                pass
+
+    def ingest_coinbase_ticker(self, tickers: list):
+        for t in tickers:
+            try:
+                self.ticker = {
+                    "P": t.get("price_percent_chg_24_h", "0.00"),
+                    "h": t.get("high_24_h", "0"),
+                    "l": t.get("low_24_h", "0"),
+                    "v": t.get("volume_24_h", "0"),
+                }
+            except (KeyError, ValueError):
+                pass
+
+    # ── Bybit adapters ───────────────────────────────────────────────────────
+
+    def ingest_bybit_trades(self, trades: list):
+        for t in trades:
+            try:
+                self._ingest(
+                    price=float(t["p"]),
+                    qty=float(t["v"]),
+                    is_buy=(t["S"] == "Buy"),
+                    ts_ms=int(t["T"]),
+                )
+            except (KeyError, ValueError):
+                pass
+
+    def ingest_bybit_ticker(self, data: dict):
+        try:
+            pct = float(data.get("price24hPcnt", 0)) * 100
+            self.ticker = {
+                "P": f"{pct:.2f}",
+                "h": data.get("highPrice24h", "0"),
+                "l": data.get("lowPrice24h", "0"),
+                "v": data.get("volume24h", "0"),
+            }
+        except (KeyError, ValueError):
+            pass
+
+    def handle_bybit_message(self, msg: dict):
+        topic = msg.get("topic", "")
+        if "publicTrade" in topic:
+            self.ingest_bybit_trades(msg.get("data", []))
+        elif "tickers" in topic:
+            self.ingest_bybit_ticker(msg.get("data", {}))
+
+    def handle_coinbase_message(self, msg: dict):
+        channel = msg.get("channel", "")
+        for event in msg.get("events", []):
+            if channel == "market_trades":
+                self.ingest_coinbase_trades(event.get("trades", []))
+            elif channel == "ticker":
+                self.ingest_coinbase_ticker(event.get("tickers", []))
 
     def _draw_candles(self, start_row, height, start_col, width):
         all_candles = list(self.candles) + ([self.current_candle] if self.current_candle else [])
@@ -185,7 +271,8 @@ class TUI:
         now = datetime.now().strftime("%H:%M:%S")
         self.stdscr.attron(curses.color_pair(3) | curses.A_BOLD)
         self.stdscr.addstr(0, 0, "─" * (w - 1))
-        title = f" ₿ BTC/USDT  [{CANDLE_SECONDS}s candles] "
+        label = EXCHANGE_LABELS.get(self.exchange, self.exchange)
+        title = f" ₿ {label}  [{CANDLE_SECONDS}s candles] "
         self.stdscr.addstr(0, 2, title)
         self.stdscr.addstr(0, w - len(now) - 3, now)
         self.stdscr.attroff(curses.color_pair(3) | curses.A_BOLD)
@@ -236,9 +323,14 @@ class TUI:
         fc = split + 2
         fw = w - fc - 1
 
-        self.stdscr.addstr(div + 1, fc, "── TRADES ──"[:fw], curses.color_pair(3) | curses.A_BOLD)
-        self.stdscr.addstr(div + 2, fc, f"{'TIME':8} {'S':1} {'PRICE':>10} {'QTY':>7}"[:fw],
-                           curses.color_pair(3))
+        try:
+            self.stdscr.addstr(div + 1, fc, "── TRADES ──"[:fw],
+                               curses.color_pair(3) | curses.A_BOLD)
+            self.stdscr.addstr(div + 2, fc,
+                               f"{'TIME':8} {'S':1} {'PRICE':>10} {'QTY':>7}"[:fw],
+                               curses.color_pair(3))
+        except curses.error:
+            pass
 
         feed_start = div + 3
         feed_rows = h - feed_start - 1
@@ -263,7 +355,7 @@ class TUI:
                 pass
 
         try:
-            footer = f" q quit │ {CANDLE_SECONDS}s candles │ Binance WebSocket "
+            footer = f" q quit │ {CANDLE_SECONDS}s candles │ {EXCHANGE_LABELS.get(self.exchange, self.exchange)} "
             self.stdscr.addstr(h - 1, 0, footer[: w - 1], curses.color_pair(6))
         except curses.error:
             pass
@@ -279,7 +371,7 @@ class TUI:
             self.ticker = data
 
 
-async def ws_loop(tui):
+async def binance_ws_loop(tui):
     while tui.running:
         try:
             async with websockets.connect(BINANCE_WS, ping_interval=20) as ws:
@@ -287,6 +379,45 @@ async def ws_loop(tui):
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=5)
                         tui.handle_message(json.loads(raw))
+                    except asyncio.TimeoutError:
+                        pass
+        except Exception:
+            await asyncio.sleep(2)
+
+
+async def bybit_ws_loop(tui):
+    while tui.running:
+        try:
+            async with websockets.connect(BYBIT_WS, ping_interval=20) as ws:
+                await ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": ["publicTrade.BTCUSDT", "tickers.BTCUSDT"],
+                }))
+                while tui.running:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                        tui.handle_bybit_message(json.loads(raw))
+                    except asyncio.TimeoutError:
+                        pass
+        except Exception:
+            await asyncio.sleep(2)
+
+
+async def coinbase_ws_loop(tui):
+    channels = ["market_trades", "ticker"]
+    while tui.running:
+        try:
+            async with websockets.connect(COINBASE_WS, ping_interval=20) as ws:
+                for ch in channels:
+                    await ws.send(json.dumps({
+                        "type": "subscribe",
+                        "product_ids": ["BTC-USD"],
+                        "channel": ch,
+                    }))
+                while tui.running:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                        tui.handle_coinbase_message(json.loads(raw))
                     except asyncio.TimeoutError:
                         pass
         except Exception:
@@ -310,15 +441,32 @@ async def draw_loop(tui):
         await asyncio.sleep(0.1)
 
 
-async def _main(stdscr):
-    tui = TUI(stdscr)
-    await asyncio.gather(ws_loop(tui), draw_loop(tui), input_loop(tui))
+async def _main(stdscr, exchange: str):
+    tui = TUI(stdscr, exchange=exchange)
+    if exchange == "coinbase":
+        loop = coinbase_ws_loop
+    elif exchange == "bybit":
+        loop = bybit_ws_loop
+    else:
+        loop = binance_ws_loop
+    await asyncio.gather(loop(tui), draw_loop(tui), input_loop(tui))
 
 
 def run():
     """Entry point for the btc-tui command."""
+    parser = argparse.ArgumentParser(
+        description="BTC live trade terminal",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--exchange",
+        choices=["binance", "coinbase", "bybit"],
+        default="binance",
+        help="Data source (default: binance)",
+    )
+    args = parser.parse_args()
     try:
-        curses.wrapper(lambda s: asyncio.run(_main(s)))
+        curses.wrapper(lambda s: asyncio.run(_main(s, args.exchange)))
     except KeyboardInterrupt:
         pass
 
