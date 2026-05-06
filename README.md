@@ -12,6 +12,12 @@ A live BTC/USDT trade terminal in your terminal, real-time candlestick chart, tr
 brew install bscript/btc-tui/btc-tui
 ```
 
+To upgrade later:
+
+```sh
+brew update && brew upgrade btc-tui
+```
+
 ### pip / pipx
 
 ```sh
